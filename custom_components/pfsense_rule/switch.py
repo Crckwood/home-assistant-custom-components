@@ -23,19 +23,24 @@ switch:
 """
 import logging
 import subprocess
-
 import voluptuous as vol
-
 import homeassistant.helpers.config_validation as cv
 
+try:
+    from homeassistant.components.switch import SwitchEntity as SwitchDevice
+except ImportError:
+    from homeassistant.components.switch import SwitchDevice
+
 from homeassistant.components.switch import (
-    SwitchDevice, PLATFORM_SCHEMA, ENTITY_ID_FORMAT)
+        PLATFORM_SCHEMA, ENTITY_ID_FORMAT)
 from homeassistant.const import (
     CONF_FRIENDLY_NAME, CONF_SWITCHES, CONF_VALUE_TEMPLATE, CONF_HOST, CONF_API_KEY, CONF_ACCESS_TOKEN)
 
 CONF_RULE_FILTER = 'rule_filter'
 
 DOMAIN = "switch"
+DEFAULT_ICON_ENABLED = 'mdi:check-network-outline'
+DEFAULT_ICON_DISABLED = 'mdi:close-network-outline'
 
 REQUIREMENTS = ['pfsense-fauxapi==20190317.1']
 
@@ -83,17 +88,20 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
         # Iterate through and find rules
         i = 0
         for rule in filters['rule']:
-            if rule_prefix:
-                if (rule['descr'].startswith(rule_prefix)):
-                    _LOGGER.debug("Found rule %s", rule['descr'])
-                    new_rule = pfSense('pfsense_'+rule['descr'],rule['descr'],rule['tracker'], host, api_key, access_token)
-                    rules.append(new_rule)
+            tracker = rule.get('tracker')
+            if tracker == None:
+                _LOGGER.warning("Skipping rule (no tracker_id): " + rule['descr'])
             else:
-                _LOGGER.debug("Found rule %s", rule['descr'])
-                new_rule = pfSense('pfsense_'+rule['descr'],rule['descr'],rule['tracker'], host, api_key, access_token)
-                rules.append(new_rule)
+                if rule_prefix:
+                    if (rule['descr'].startswith(rule_prefix)):
+                        _LOGGER.debug("Found rule %s", rule['descr'])
+                        new_rule = pfSense('pfSense_'+rule['descr'], rule['descr'], tracker, host, api_key, access_token, rule_prefix)
+                        rules.append(new_rule)
+                else:
+                    _LOGGER.debug("Found rule %s", rule['descr'])
+                    new_rule = pfSense('pfSense_'+rule['descr'], rule['descr'], tracker, host, api_key, access_token, rule_prefix)
+                    rules.append(new_rule)
             i=i+1
-
 
         # Add devices
         add_entities(rules)
@@ -103,7 +111,7 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
 class pfSense(SwitchDevice):
     """Representation of an pfSense Rule."""
 
-    def __init__(self, name, rule_name, tracker_id, host, api_key, access_token):
+    def __init__(self, name, rule_name, tracker_id, host, api_key, access_token, rule_prefix):
         _LOGGER.info("Initialized pfSense Rule SWITCH %s", name)
         """Initialize an pfSense Rule as a switch."""
         self._name = name
@@ -113,6 +121,7 @@ class pfSense(SwitchDevice):
         self._api_key = api_key
         self._access_token = access_token
         self._tracker_id = tracker_id
+        self._rule_prefix = rule_prefix
 
     @property
     def name(self):
@@ -121,6 +130,13 @@ class pfSense(SwitchDevice):
     @property
     def is_on(self):
         return self._state
+
+    @property
+    def icon(self):
+        if self._state:
+            return DEFAULT_ICON_ENABLED
+        else:
+            return DEFAULT_ICON_DISABLED
 
     def turn_on(self, **kwargs):
         self.set_rule_state(True)
@@ -133,6 +149,12 @@ class pfSense(SwitchDevice):
         import pprint, sys
         from PfsenseFauxapi.PfsenseFauxapi import PfsenseFauxapi
 
+        if self._rule_prefix:
+            if (self._rule_name.startswith(self._rule_prefix)):
+                self._name = self._rule_name.replace(self._rule_prefix,'').strip()
+        else:
+            self._name = self._rule_name
+
         _LOGGER.debug("Getting pfSense current rule state for %s", self._rule_name)
         try:
             # Setup connection with devices/cloud
@@ -142,7 +164,7 @@ class pfSense(SwitchDevice):
             filters = FauxapiLib.config_get('filter')
 
             for rule in filters['rule']:
-                if (rule['tracker'] == self._tracker_id):
+                if (rule.get('tracker') == self._tracker_id):
                     _LOGGER.debug("Found rule with tracker %s, updating state.", self._tracker_id)
                     if ('disabled' in rule):
                         self._state = False
@@ -168,7 +190,7 @@ class pfSense(SwitchDevice):
 
         i = 0
         for rule in filters['rule']:
-            if (rule['tracker'] == self._tracker_id):
+            if (rule.get('tracker') == self._tracker_id):
                 _LOGGER.info("Found rule changing state rule: %s", self._rule_name)
                 if (action == True):
                     if ('disabled' in rule):
